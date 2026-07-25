@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent } from "@/components/ui/card"
-import { LayoutDashboard, Wand2, Copy, Check, MessageSquare, Clapperboard, Loader2, Download, Database, Zap, ArrowRight, ClipboardPaste, Search, History, Heart, Sparkles } from "lucide-react"
+import { LayoutDashboard, Wand2, Copy, Check, MessageSquare, Clapperboard, Loader2, Download, Database, Zap, ArrowRight, ClipboardPaste, Search, History, Heart, Sparkles, Flame, Hash, Scissors } from "lucide-react"
+import { cutVideoClips, CutResult } from "@/lib/ffmpeg-cutter"
 
 // --- TYPES ---
 type Scene = { scene_number: number; visual: string; voiceover: string; }
@@ -17,8 +18,15 @@ type GenerateResult = {
 type QuizResult = {
   question: string; options: string[]; correct_answer: string; sweet_message: string;
 }
+type MemeClipResult = {
+  hook_caption: string;
+  highlight_moments: { timestamp: string; why: string; overlay_text: string; }[];
+  meme_caption: string;
+  sound_effect_suggestion: string;
+  hashtags: string[];
+}
 type GlobalHistoryItem = {
-  id: number; type: 'Long' | 'Shorts' | 'B-Roll' | 'Quiz';
+  id: number; type: 'Long' | 'Shorts' | 'B-Roll' | 'Quiz' | 'MemeClip';
   title: string; preview: string; timestamp: string; fullData: any;
 }
 
@@ -185,7 +193,7 @@ const ScriptRenderer = ({ result, copied, onCopy }: { result: GenerateResult; co
 };
 
 export default function Dashboard() {
-  const [activeSidebar, setActiveSidebar] = useState<'genLong' | 'genShorts' | 'broll' | 'reply' | 'quiz' | 'history'>('genLong');
+  const [activeSidebar, setActiveSidebar] = useState<'genLong' | 'genShorts' | 'broll' | 'reply' | 'quiz' | 'memeClip' | 'history'>('genLong');
   const [copied, setCopied] = useState<{ [key: string]: boolean }>({});
 
   const [globalHistory, setGlobalHistory] = useState<GlobalHistoryItem[]>([]);
@@ -211,6 +219,19 @@ export default function Dashboard() {
   const [isQuizzing, setIsQuizzing] = useState(false);
   const [showAnswer, setShowAnswer] = useState(false);
 
+  // Meme Clip Campaign States
+  const [memeVideoPreview, setMemeVideoPreview] = useState<string | null>(null);
+  const [memeVideoFile, setMemeVideoFile] = useState<File | null>(null);
+  const [campaignBrief, setCampaignBrief] = useState('');
+  const [analyzingMeme, setAnalyzingMeme] = useState(false);
+  const [memeResult, setMemeResult] = useState<MemeClipResult | null>(null);
+  const memeFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-Cut States
+  const [isCutting, setIsCutting] = useState(false);
+  const [cutProgress, setCutProgress] = useState('');
+  const [cutClips, setCutClips] = useState<CutResult[]>([]);
+
   useEffect(() => {
     const saved = localStorage.getItem('baylog_universal_history_v8');
     if (saved) setGlobalHistory(JSON.parse(saved));
@@ -228,6 +249,7 @@ export default function Dashboard() {
     else if (item.type === 'Shorts') { setResult(item.fullData); setActiveSidebar('genShorts'); } 
     else if (item.type === 'B-Roll') { setBrollKeywords(item.fullData); setVideoPreview(null); setActiveSidebar('broll'); } 
     else if (item.type === 'Quiz') { setQuizResult(item.fullData); setShowAnswer(false); setActiveSidebar('quiz'); }
+    else if (item.type === 'MemeClip') { setMemeResult(item.fullData); setMemeVideoPreview(null); setMemeVideoFile(null); setCutClips([]); setActiveSidebar('memeClip'); }
   };
 
   const handleCopy = (text: string, key: string) => {
@@ -299,6 +321,50 @@ export default function Dashboard() {
 
   const brollHistoryList = globalHistory.filter(item => item.type === 'B-Roll').slice(0, 5);
 
+  const handleMemeClipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setMemeVideoFile(file);
+    setMemeVideoPreview(URL.createObjectURL(file));
+    setAnalyzingMeme(true); setMemeResult(null); setCutClips([]);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('campaignBrief', campaignBrief);
+      const res = await fetch('/api/meme_clip', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.hook_caption) {
+        setMemeResult(data);
+        saveToHistory({ type: 'MemeClip', title: `Clip: ${file.name}`, preview: data.hook_caption, fullData: data });
+      } else alert("Gagal: " + data.error);
+    } catch (err) { alert("Error sistem."); }
+    finally { setAnalyzingMeme(false); }
+  };
+
+  const memeHistoryList = globalHistory.filter(item => item.type === 'MemeClip').slice(0, 5);
+
+  const handleAutoCut = async () => {
+    if (!memeVideoFile || !memeResult) return alert("Video atau hasil analisa belum ada, Bay.");
+    setIsCutting(true); setCutClips([]); setCutProgress('Memulai...');
+    try {
+      const results = await cutVideoClips(memeVideoFile, memeResult.highlight_moments, (msg) => setCutProgress(msg));
+      setCutClips(results);
+    } catch (err) {
+      alert("Gagal motong video. Coba pakai file MP4 yang lebih kecil ukurannya.");
+    } finally {
+      setIsCutting(false); setCutProgress('');
+    }
+  };
+
+  const handleDownloadClip = (clip: CutResult, index: number) => {
+    const a = document.createElement('a');
+    a.href = clip.url;
+    a.download = `bayu_clip_${index + 1}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
       <aside className="w-72 bg-white border-r border-slate-200 p-6 flex flex-col gap-6 shadow-sm z-10 overflow-y-auto">
@@ -313,6 +379,10 @@ export default function Dashboard() {
           
           <Button variant={activeSidebar === 'quiz' ? "default" : "ghost"} onClick={() => setActiveSidebar('quiz')} className={`justify-start gap-4 py-6 ${activeSidebar === 'quiz' ? 'bg-pink-500 text-white hover:bg-pink-600 shadow-md' : 'text-pink-600 hover:bg-pink-50 hover:text-pink-700'}`}>
             <Heart size={20} className={activeSidebar === 'quiz' ? 'fill-white' : 'fill-pink-200'}/> Quiz Zazqya
+          </Button>
+
+          <Button variant={activeSidebar === 'memeClip' ? "default" : "ghost"} onClick={() => setActiveSidebar('memeClip')} className={`justify-start gap-4 py-6 ${activeSidebar === 'memeClip' ? 'bg-orange-500 text-white hover:bg-orange-600 shadow-md' : 'text-orange-600 hover:bg-orange-50 hover:text-orange-700'}`}>
+            <Flame size={20} className={activeSidebar === 'memeClip' ? 'fill-white' : 'fill-orange-200'}/> Meme Clip Campaign
           </Button>
 
           <div className="h-px bg-slate-200 my-1"></div>
@@ -498,6 +568,156 @@ export default function Dashboard() {
             </div>
           )}
 
+          {activeSidebar === 'memeClip' && (
+            <div className="w-full flex flex-col gap-6 animate-in fade-in">
+              <div>
+                <h2 className="text-3xl font-black text-orange-600 flex items-center gap-3"><Flame/> Meme Clip Campaign</h2>
+                <p className="text-slate-500 mt-1">Upload footage mentahan campaign, AI cariin momen paling lucu/reaksi buat diclip gaya meme/santai.</p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+                <div className="col-span-1 flex flex-col gap-6">
+                  <div className="bg-white border rounded-2xl p-4 shadow-sm">
+                    <p className="text-[11px] font-black text-slate-400 uppercase mb-3 flex items-center gap-2"><ClipboardPaste size={14}/> Brief Campaign (Opsional)</p>
+                    <Textarea
+                      value={campaignBrief}
+                      onChange={(e) => setCampaignBrief(e.target.value)}
+                      placeholder="Contoh: wajib pakai audio resmi, hook 2 detik, tema villain/dark edit..."
+                      className="text-sm border-slate-300 min-h-[90px]"
+                    />
+                  </div>
+
+                  <div className="border-2 border-dashed border-orange-300 bg-orange-50/50 rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-orange-100 transition-colors" onClick={() => memeFileInputRef.current?.click()}>
+                    <input type="file" accept="video/mp4,video/quicktime" className="hidden" ref={memeFileInputRef} onChange={handleMemeClipUpload} />
+                    <span className="text-4xl mb-3">🔥</span>
+                    <p className="text-sm font-bold text-orange-700">Drop Footage Campaign</p>
+                    <p className="text-xs text-orange-500 mt-1">AI nonton & cariin momen paling worth di-clip</p>
+                  </div>
+
+                  {memeVideoPreview && (
+                    <div className="rounded-xl overflow-hidden border-2 border-slate-800 bg-black">
+                      <video src={memeVideoPreview} controls className="w-full max-h-[220px]" />
+                    </div>
+                  )}
+
+                  {memeHistoryList.length > 0 && (
+                    <div className="bg-white border rounded-2xl p-4 shadow-sm">
+                      <p className="text-[11px] font-black text-slate-400 uppercase mb-3 flex items-center gap-2"><History size={14}/> Riwayat Meme Clip</p>
+                      <div className="flex flex-col gap-2">
+                        {memeHistoryList.map(item => (
+                          <Button key={item.id} variant="outline" size="sm" onClick={() => handleRestoreHistory(item)} className="justify-start truncate w-full text-xs h-9 hover:border-orange-400 hover:text-orange-700 transition-colors">
+                            🔥 {item.title}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="col-span-1 lg:col-span-2">
+                  {analyzingMeme && (<div className="h-[200px] flex flex-col items-center justify-center text-orange-600 gap-4"><Loader2 size={40} className="animate-spin" /><p className="font-bold animate-pulse">Nonton footage dan nyari momen paling receh...</p></div>)}
+
+                  {memeResult && !analyzingMeme && (
+                    <div className="flex flex-col gap-5 animate-in fade-in">
+                      <Card className="border-2 border-orange-300 bg-orange-50 shadow-sm rounded-2xl">
+                        <CardContent className="p-5">
+                          <p className="text-[11px] font-black text-orange-500 uppercase mb-2 flex items-center gap-2"><Flame size={14}/> Hook Caption (2 Detik Pertama)</p>
+                          <p className="text-lg font-black text-slate-800">"{memeResult.hook_caption}"</p>
+                          <Button variant="outline" size="sm" onClick={() => handleCopy(memeResult.hook_caption, 'hook')} className="mt-3 h-8 text-xs">
+                            {copied['hook'] ? <Check size={14} className="mr-1"/> : <Copy size={14} className="mr-1"/>} Copy Hook
+                          </Button>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border shadow-sm rounded-2xl">
+                        <CardContent className="p-5">
+                          <p className="text-[11px] font-black text-slate-400 uppercase mb-3">Momen Terbaik Buat Di-clip</p>
+                          <div className="flex flex-col gap-3">
+                            {memeResult.highlight_moments.map((m, i) => (
+                              <div key={i} className="bg-slate-50 border rounded-xl p-4">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-xs font-black text-orange-600 bg-orange-100 px-2 py-1 rounded">{m.timestamp}</span>
+                                </div>
+                                <p className="text-sm text-slate-600 mt-2">{m.why}</p>
+                                <p className="text-sm font-bold text-slate-800 mt-2">Overlay: "{m.overlay_text}"</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          <Button
+                            onClick={handleAutoCut}
+                            disabled={isCutting || !memeVideoFile}
+                            className="w-full mt-4 h-11 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl"
+                          >
+                            {isCutting ? <><Loader2 size={16} className="animate-spin mr-2"/> {cutProgress || 'Memotong...'}</> : <><Scissors size={16} className="mr-2"/> Potong Otomatis Jadi Bahan CapCut</>}
+                          </Button>
+                          {!memeVideoFile && <p className="text-xs text-slate-400 mt-2 text-center">Upload ulang videonya di panel kiri kalau mau motong otomatis (video asli belum ke-load dari riwayat).</p>}
+
+                          {cutClips.length > 0 && (
+                            <div className="mt-5 flex flex-col gap-3 animate-in fade-in">
+                              <p className="text-[11px] font-black text-slate-400 uppercase">Hasil Potongan (Siap Import ke CapCut)</p>
+                              {cutClips.map((clip, i) => (
+                                <div key={i} className="border rounded-xl p-3 flex items-center gap-3 bg-white">
+                                  {clip.ok ? (
+                                    <>
+                                      <video src={clip.url} className="w-24 h-16 object-cover rounded-lg border" muted />
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-bold text-slate-700 truncate">{clip.label}</p>
+                                        <p className="text-[11px] text-slate-400 truncate">{clip.overlayText}</p>
+                                      </div>
+                                      <Button size="sm" onClick={() => handleDownloadClip(clip, i)} className="bg-slate-900 hover:bg-slate-800 text-white h-8 text-xs">
+                                        <Download size={14} className="mr-1"/> Download
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <p className="text-xs text-red-500">{clip.label}: {clip.error}</p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border shadow-sm rounded-2xl">
+                        <CardContent className="p-5 flex flex-col gap-4">
+                          <div>
+                            <p className="text-[11px] font-black text-slate-400 uppercase mb-2">Caption Posting</p>
+                            <p className="text-sm text-slate-700">{memeResult.meme_caption}</p>
+                            <Button variant="outline" size="sm" onClick={() => handleCopy(memeResult.meme_caption, 'memeCaption')} className="mt-3 h-8 text-xs">
+                              {copied['memeCaption'] ? <Check size={14} className="mr-1"/> : <Copy size={14} className="mr-1"/>} Copy Caption
+                            </Button>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-black text-slate-400 uppercase mb-2">Saran Sound Effect</p>
+                            <p className="text-sm text-slate-700">{memeResult.sound_effect_suggestion}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-black text-slate-400 uppercase mb-2 flex items-center gap-1"><Hash size={14}/> Hashtags</p>
+                            <div className="flex flex-wrap gap-2">
+                              {memeResult.hashtags.map((tag, i) => (
+                                <span key={i} className="text-xs font-bold bg-slate-100 text-slate-600 px-3 py-1 rounded-full">{tag}</span>
+                              ))}
+                            </div>
+                            <Button variant="outline" size="sm" onClick={() => handleCopy(memeResult.hashtags.join(' '), 'memeTags')} className="mt-3 h-8 text-xs">
+                              {copied['memeTags'] ? <Check size={14} className="mr-1"/> : <Copy size={14} className="mr-1"/>} Copy Hashtags
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+
+                  {!memeResult && !analyzingMeme && (
+                    <div className="h-[300px] border-2 border-dashed border-slate-200 rounded-2xl flex items-center justify-center text-slate-400 text-sm font-medium">
+                      Isi brief campaign (opsional), lalu drop footage di samping.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeSidebar === 'history' && (
             <div className="w-full flex flex-col gap-6 animate-in fade-in">
               <div>
@@ -512,7 +732,7 @@ export default function Dashboard() {
                   {globalHistory.map((item) => (
                     <Card key={item.id} onClick={() => handleRestoreHistory(item)} className="shadow-sm border border-slate-200 cursor-pointer hover:bg-slate-100 hover:border-slate-300 transition-all group">
                       <CardContent className="p-5 flex items-start gap-4">
-                        <div className={`p-3 rounded-lg text-white font-bold text-xs uppercase tracking-wider ${item.type === 'Long' ? 'bg-indigo-600' : item.type === 'Shorts' ? 'bg-rose-600' : item.type === 'B-Roll' ? 'bg-emerald-600' : item.type === 'Quiz' ? 'bg-pink-500' : 'bg-blue-600'}`}>
+                        <div className={`p-3 rounded-lg text-white font-bold text-xs uppercase tracking-wider ${item.type === 'Long' ? 'bg-indigo-600' : item.type === 'Shorts' ? 'bg-rose-600' : item.type === 'B-Roll' ? 'bg-emerald-600' : item.type === 'Quiz' ? 'bg-pink-500' : item.type === 'MemeClip' ? 'bg-orange-500' : 'bg-blue-600'}`}>
                           {item.type}
                         </div>
                         <div className="flex-1 min-w-0">
